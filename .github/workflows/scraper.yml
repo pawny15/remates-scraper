@@ -1,0 +1,38 @@
+name: Scraper Remates Judiciales
+
+on:
+  schedule:
+    - cron: '0 11 * * 1'  # Cada lunes a las 8am hora Chile (UTC-3 = 11 UTC)
+  workflow_dispatch:        # También permite ejecutar manualmente desde GitHub
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install requests beautifulsoup4 gspread google-auth lxml
+
+      - name: Ejecutar scraper
+        run: python scraper.py
+
+      - name: Subir CSV a Google Sheets
+        env:
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python subir_sheets.py
+
+      - name: Guardar CSV como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: remates-${{ github.run_number }}
+          path: remates_limpio.csv
+          retention-days: 30
