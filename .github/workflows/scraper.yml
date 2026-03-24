@@ -1,9 +1,9 @@
-name: Scraper Remates Judiciales
+name: Actualizar Remates Diariamente
 
 on:
   schedule:
-    - cron: '0 11 * * 1'  # Cada lunes a las 8am hora Chile (UTC-3 = 11 UTC)
-  workflow_dispatch:        # También permite ejecutar manualmente desde GitHub
+    - cron: '0 11 * * *'   # Todos los días a las 8:00 AM Chile
+  workflow_dispatch:         # Botón manual en GitHub Actions
 
 jobs:
   scrape:
@@ -13,26 +13,27 @@ jobs:
       - name: Clonar repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar Python
+      - name: Instalar Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install requests beautifulsoup4 gspread google-auth lxml
+        run: pip install requests beautifulsoup4
+
+      - name: Actualizar valor UF del día
+        run: |
+          UF=$(curl -s "https://mindicador.cl/api/uf" | python3 -c "import sys,json; print(json.load(sys.stdin)['serie'][0]['valor'])")
+          echo "UF del día: $UF"
+          sed -i "s/UF *= *[0-9.]*/UF = $UF/" scraper.py
 
       - name: Ejecutar scraper
         run: python scraper.py
 
-      - name: Subir CSV a Google Sheets
-        env:
-          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-        run: python subir_sheets.py
-
-      - name: Guardar CSV como artefacto
-        uses: actions/upload-artifact@v4
-        with:
-          name: remates-${{ github.run_number }}
-          path: remates_limpio.csv
-          retention-days: 30
+      - name: Commit y push del CSV al repositorio
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add remates_limpio.csv scraper.py
+          git diff --cached --quiet || git commit -m "🏠 Remates actualizados $(date '+%Y-%m-%d')"
+          git push
