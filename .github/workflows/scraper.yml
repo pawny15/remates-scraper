@@ -2,8 +2,8 @@ name: Actualizar Remates Diariamente
 
 on:
   schedule:
-    - cron: '0 11 * * *'   # Todos los días a las 8:00 AM Chile
-  workflow_dispatch:         # Botón manual en GitHub Actions
+    - cron: '0 11 * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
