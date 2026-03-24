@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 OUTPUT_CSV = "remates_limpio.csv"
 LOG_FILE   = "scraper.log"
 DELAY      = 1.5
-UF         = 39841.72  # actualizar semanalmente
+UF = 39841.72  # actualizar semanalmente
 
 HEADERS = {
     "User-Agent": (
