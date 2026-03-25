@@ -19,10 +19,10 @@ import requests
 from bs4 import BeautifulSoup
 
 # ─── CONFIGURACION ─────────────────────────────────────
-OUTPUT_CSV = "remates_limpio.csv"
-LOG_FILE   = "scraper.log"
-DELAY      = 1.5
-UF = 39841.72  # actualizar semanalmente
+OUTPUT_CSV  = "remates_limpio.csv"
+LOG_FILE    = "scraper.log"
+DELAY       = 1.5
+UF          = 39841.72   # actualizar semanalmente
 
 HEADERS = {
     "User-Agent": (
@@ -49,32 +49,35 @@ log = logging.getLogger(__name__)
 # ─── MODELO ────────────────────────────────────────────
 @dataclass
 class Remate:
-    id:            str = ""
-    tipo:          str = ""
-    region:        str = ""
-    comuna:        str = ""
-    direccion:     str = ""
-    fecha_remate:  str = ""   # DD/MM/YYYY para mostrar
-    fecha_sort:    str = ""   # YYYY-MM-DD para ordenar
-    precio_clp:    str = ""
-    precio_uf:     str = ""
-    metros2:       str = ""
-    url_ficha:     str = ""
-    url_maps:      str = ""
-    actualizado:   str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
+    id: str               = ""
+    tipo: str             = ""
+    region: str           = ""
+    comuna: str           = ""
+    direccion: str        = ""
+    fecha_remate: str     = ""   # DD/MM/YYYY para mostrar
+    fecha_sort: str       = ""   # YYYY-MM-DD para ordenar
+    fecha_publicacion: str = ""  # DD/MM/YYYY — nuevo campo ← AGREGADO
+    precio_clp: str       = ""
+    precio_uf: str        = ""
+    metros2: str          = ""
+    url_ficha: str        = ""
+    url_maps: str         = ""
+    actualizado: str      = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
 
     @staticmethod
     def headers():
         return [
             "id", "tipo", "region", "comuna", "direccion",
-            "fecha_remate", "precio_clp", "precio_uf",
+            "fecha_remate", "fecha_sort", "fecha_publicacion",   # ← AGREGADO
+            "precio_clp", "precio_uf",
             "metros2", "url_ficha", "url_maps", "actualizado"
         ]
 
     def to_row(self):
         return [
             self.id, self.tipo, self.region, self.comuna, self.direccion,
-            self.fecha_remate, self.precio_clp, self.precio_uf,
+            self.fecha_remate, self.fecha_sort, self.fecha_publicacion,   # ← AGREGADO
+            self.precio_clp, self.precio_uf,
             self.metros2, self.url_ficha, self.url_maps, self.actualizado
         ]
 
@@ -118,17 +121,6 @@ def precio_a_clp_uf(texto: str) -> tuple:
         return texto, ""
 
 
-def limpiar_direccion(texto: str) -> str:
-    if not texto:
-        return ""
-    texto = re.sub(r"%27", "'", texto)
-    texto = re.sub(r"%[0-9A-Fa-f]{2}", " ", texto)
-    texto = re.sub(r"\s+(Region|Región)\s+Metropolitana.*$", "", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\s+Chile\s*$", "", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\s{2,}", " ", texto)
-    return texto.strip()
-
-
 def normalizar_tipo(raw: str) -> str:
     mapa = {
         "departamento": "Departamento",
@@ -161,7 +153,7 @@ def generar_id(url_ficha: str, fecha: str, comuna: str) -> str:
 
 
 # ══════════════════════════════════════════════════════
-#  SCRAPER — rematesinmobiliarios.cl
+# SCRAPER — rematesinmobiliarios.cl
 # ══════════════════════════════════════════════════════
 def scrape() -> list:
     BASE = "https://www.rematesinmobiliarios.cl"
@@ -186,20 +178,21 @@ def scrape() -> list:
         ("region-magallanes", "Magallanes"),
     ]
 
-    session = requests.Session()
-    remates = []
+    session   = requests.Session()
+    remates   = []
     ids_vistos = set()
 
     for slug, nombre_region in REGIONES:
         url = f"{BASE}/remates/{slug}/" if slug else f"{BASE}/"
         log.info(f"  -> {url}")
+
         soup = get_soup(url, session)
         if not soup:
             continue
 
         tabla = soup.select_one("table")
         if not tabla:
-            log.info(f"     Sin tabla")
+            log.info(f"  Sin tabla")
             continue
 
         filas = tabla.select("tbody tr") or tabla.select("tr")
@@ -209,9 +202,26 @@ def scrape() -> list:
             celdas = fila.select("td")
             if len(celdas) < 5:
                 continue
+
             try:
+                # ── Columnas del listado ──────────────────────────────────
+                # [0] N°
+                # [1] icono tipo
+                # [2] Fecha Remate     → DD-MM-YYYY
+                # [3] Publicado        → DD-MM-YYYY  ← NUEVO
+                # [4] Región
+                # [5] Comuna
+                # [6] Tipo texto
+                # [7] Maps link
+                # [8] M2
+                # [9] Mínimo
+                # [10] Ver (link ficha)
+
                 # Fecha remate (col 2)
                 fecha_display, fecha_sort = parsear_fecha(celdas[2].get_text(strip=True))
+
+                # Fecha publicación (col 3) ← NUEVO
+                fecha_pub_display, _ = parsear_fecha(celdas[3].get_text(strip=True))
 
                 # Región (col 4)
                 region = celdas[4].get_text(strip=True) if len(celdas) > 4 else nombre_region
@@ -224,17 +234,15 @@ def scrape() -> list:
                 tipo = normalizar_tipo(tipo_raw)
 
                 # Maps y dirección (col 7)
-                url_maps = ""
+                url_maps  = ""
                 direccion = ""
                 if len(celdas) > 7:
                     maps_a = celdas[7].select_one("a[href]")
                     if maps_a:
                         url_maps = maps_a.get("href", "")
-                        # Extraer dirección de la URL de maps
                         m = re.search(r"/maps/search/(.+)", url_maps)
                         if m:
                             dir_raw = m.group(1)
-                            # Decodificar caracteres comunes
                             for enc, char in [
                                 ("%C3%B1","ñ"),("%C3%A9","é"),("%C3%B3","ó"),
                                 ("%C3%A1","á"),("%C3%AD","í"),("%C3%BA","ú"),
@@ -242,7 +250,6 @@ def scrape() -> list:
                                 ("+"," "),
                             ]:
                                 dir_raw = dir_raw.replace(enc, char)
-                            # Quitar ciudad/región/chile del final
                             dir_raw = re.sub(
                                 rf"\s*{re.escape(comuna.lower())}.*$", "",
                                 dir_raw, flags=re.IGNORECASE
@@ -273,38 +280,39 @@ def scrape() -> list:
                 ids_vistos.add(rid)
 
                 r = Remate(
-                    id=rid,
-                    tipo=tipo,
-                    region=region,
-                    comuna=comuna,
-                    direccion=direccion,
-                    fecha_remate=fecha_display,
-                    fecha_sort=fecha_sort,
-                    precio_clp=precio_clp,
-                    precio_uf=precio_uf,
-                    metros2=metros2,
-                    url_ficha=url_ficha,
-                    url_maps=url_maps,
+                    id               = rid,
+                    tipo             = tipo,
+                    region           = region,
+                    comuna           = comuna,
+                    direccion        = direccion,
+                    fecha_remate     = fecha_display,
+                    fecha_sort       = fecha_sort,
+                    fecha_publicacion = fecha_pub_display,   # ← NUEVO
+                    precio_clp       = precio_clp,
+                    precio_uf        = precio_uf,
+                    metros2          = metros2,
+                    url_ficha        = url_ficha,
+                    url_maps         = url_maps,
                 )
                 remates.append(r)
                 nuevos += 1
 
             except Exception as e:
-                log.warning(f"     Error en fila: {e}")
+                log.warning(f"  Error en fila: {e}")
 
-        log.info(f"     {nuevos} nuevos en {nombre_region or 'todas las regiones'}")
+        log.info(f"  {nuevos} nuevos en {nombre_region or 'todas las regiones'}")
 
     return remates
 
 
 # ══════════════════════════════════════════════════════
-#  MAIN
+# MAIN
 # ══════════════════════════════════════════════════════
 def main():
     log.info("")
     log.info("=" * 60)
     log.info("  SCRAPER — mipropiedadchile.cl")
-    log.info(f"  {datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}")
+    log.info(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info("=" * 60)
 
     remates = scrape()
@@ -327,6 +335,7 @@ def main():
     log.info(f"  Abrir en Excel: start {OUTPUT_CSV}")
     log.info("=" * 60)
     log.info("")
+
     print("")
     print(f"  Listo. {len(remates)} remates guardados en '{OUTPUT_CSV}'")
     print(f"  Ejecuta 'start {OUTPUT_CSV}' para abrirlo en Excel.")
