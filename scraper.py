@@ -308,6 +308,28 @@ def scrape() -> list:
 # ══════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════
+def filtrar_vigentes(remates: list) -> list:
+    """Elimina remates cuya fecha ya pasó (hoy incluido se mantiene)."""
+    hoy = datetime.now().date()
+    vigentes = []
+    eliminados = 0
+    for r in remates:
+        if not r.fecha_sort:
+            vigentes.append(r)
+            continue
+        try:
+            fecha = datetime.strptime(r.fecha_sort, "%Y-%m-%d").date()
+            if fecha >= hoy:
+                vigentes.append(r)
+            else:
+                eliminados += 1
+                log.info(f"  🗑  Eliminado (pasado): {r.tipo} en {r.comuna} — {r.fecha_remate}")
+        except ValueError:
+            vigentes.append(r)
+    log.info(f"  → {eliminados} remates eliminados por fecha pasada")
+    return vigentes
+
+
 def main():
     log.info("")
     log.info("=" * 60)
@@ -316,6 +338,9 @@ def main():
     log.info("=" * 60)
 
     remates = scrape()
+
+    # Filtrar remates cuya fecha ya pasó
+    remates = filtrar_vigentes(remates)
 
     # Ordenar por fecha más próxima
     remates.sort(key=lambda r: r.fecha_sort or "9999")
@@ -330,15 +355,13 @@ def main():
     log.info("")
     log.info("=" * 60)
     log.info(f"  COMPLETADO")
-    log.info(f"  {len(remates)} remates encontrados y ordenados por fecha")
+    log.info(f"  {len(remates)} remates vigentes guardados")
     log.info(f"  Archivo: {OUTPUT_CSV}")
-    log.info(f"  Abrir en Excel: start {OUTPUT_CSV}")
     log.info("=" * 60)
     log.info("")
 
     print("")
-    print(f"  Listo. {len(remates)} remates guardados en '{OUTPUT_CSV}'")
-    print(f"  Ejecuta 'start {OUTPUT_CSV}' para abrirlo en Excel.")
+    print(f"  Listo. {len(remates)} remates vigentes guardados en '{OUTPUT_CSV}'")
     print("")
 
 
