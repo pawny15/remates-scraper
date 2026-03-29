@@ -750,6 +750,27 @@ function showTab(id){
         <div style="font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;">Datos del remate</div>
         <div id="m-grid-full" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;"></div>
 
+        <!-- Mapa de ubicación -->
+        <div id="m-mapa-wrap" style="margin-bottom:20px;display:none;">
+          <div style="font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;">Ubicación aproximada</div>
+          <div style="border-radius:10px;overflow:hidden;border:1px solid var(--border);">
+            <iframe id="m-mapa-iframe" width="100%" height="220" style="border:none;display:block;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-top:5px;">📍 Ubicación referencial — confirmar con el expediente judicial.</div>
+        </div>
+
+        <!-- Link a ficha original -->
+        <div id="m-link-ficha-wrap" style="margin-bottom:20px;display:none;">
+          <a id="m-link-ficha" href="#" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;background:var(--off);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-decoration:none;transition:border-color .15s;" onmouseover="this.style.borderColor='var(--blue2)'" onmouseout="this.style.borderColor='var(--border)'">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue2)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            <div>
+              <div style="font-size:12px;font-weight:700;color:var(--text);">Ver ficha completa en rematesinmobiliarios.cl</div>
+              <div style="font-size:11px;color:var(--text3);">Anuncio oficial con todos los antecedentes de la causa</div>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" style="margin-left:auto;flex-shrink:0;"><polyline points="9 18 15 12 9 6"/></svg>
+          </a>
+        </div>
+
         <!-- Condiciones -->
         <div style="font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;">Condiciones de participación</div>
         <div style="background:var(--off);border-radius:10px;padding:14px 16px;margin-bottom:20px;" class="condiciones-box">
@@ -1173,6 +1194,123 @@ function fichaTab(id){
   });
 }
 
+// Cache para no refetchear la misma ficha dos veces
+const fichaCache = {};
+
+async function cargarDatosJudiciales(url_ficha, r) {
+  if(!url_ficha) return;
+  if(fichaCache[url_ficha]) {
+    aplicarDatosJudiciales(fichaCache[url_ficha], r);
+    return;
+  }
+
+  // Mostrar spinner en el grid
+  const grid = document.getElementById('m-grid-full');
+  const spinnerRow = `<div class="info-card" style="grid-column:span 2;text-align:center;padding:16px;">
+    <div style="font-size:12px;color:var(--text3);">⏳ Cargando datos judiciales…</div>
+  </div>`;
+  grid.innerHTML = grid.innerHTML + spinnerRow;
+
+  try {
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url_ficha)}`;
+    const resp = await fetch(proxyUrl);
+    const json = await resp.json();
+    const html = json.contents;
+
+    // Parsear tabla de la ficha
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const rows = doc.querySelectorAll('table tr');
+    const datos = {};
+    rows.forEach(row => {
+      const cells = row.querySelectorAll('td');
+      if(cells.length >= 2) {
+        const key = cells[0].textContent.replace(':','').trim().toLowerCase();
+        const val = cells[1].textContent.trim();
+        datos[key] = val;
+      }
+    });
+
+    // Título del remate (h2)
+    const h2 = doc.querySelector('h2');
+    if(h2) datos['titulo'] = h2.textContent.trim();
+
+    fichaCache[url_ficha] = datos;
+    aplicarDatosJudiciales(datos, r);
+  } catch(e) {
+    // Si falla el fetch, quitar spinner silenciosamente
+    document.getElementById('m-grid-full').querySelector('[style*="spinner"], div[style*="Cargando"]') && null;
+  }
+}
+
+function aplicarDatosJudiciales(datos, r) {
+  // Campos judiciales que mapear
+  const campos = [
+    { keys: ['origen'],                label: 'Origen / Tipo juicio',  icon: '⚖️' },
+    { keys: ['tribunal / juez','tribunal'],  label: 'Tribunal / Juez',   icon: '🏛️' },
+    { keys: ['rol'],                   label: 'Rol de causa',          icon: '📋' },
+    { keys: ['tipo remate'],           label: 'Tipo de remate',        icon: '🔔' },
+    { keys: ['fecha'],                 label: 'Fecha y hora',          icon: '📅' },
+    { keys: ['lugar'],                 label: 'Lugar del remate',      icon: '📍' },
+    { keys: ['tipo propiedad','tipo de propiedad'], label: 'Tipo propiedad', icon: '🏠' },
+    { keys: ['postura mínima','postura minima'], label: 'Postura mínima', icon: '💰' },
+    { keys: ['garantía','garantia'],   label: 'Garantía requerida',    icon: '🔒' },
+    { keys: ['forma de pago'],         label: 'Forma de pago',         icon: '💳' },
+    { keys: ['modalidad'],             label: 'Modalidad',             icon: '📝' },
+    { keys: ['plazo'],                 label: 'Plazo de pago',         icon: '⏱️' },
+    { keys: ['cuenta depósito','cuenta deposito'], label: 'Cuenta depósito', icon: '🏦' },
+    { keys: ['requisitos'],            label: 'Requisitos',            icon: '📌' },
+    { keys: ['condiciones'],           label: 'Condiciones',           icon: '📄' },
+    { keys: ['observaciones'],         label: 'Observaciones',         icon: '💬' },
+  ];
+
+  const horaStr = r.hora ? ` · ${r.hora} hrs` : '';
+  let gridHTML = `
+    <div class="info-card"><div class="info-card-label">Fecha del remate</div><div class="info-card-val">${r.fecha_remate||'—'}${horaStr}</div></div>
+    <div class="info-card"><div class="info-card-label">Postura mínima</div><div class="info-card-val blue">${r.precio_clp||'—'}</div></div>
+    <div class="info-card"><div class="info-card-label">Equivalente UF</div><div class="info-card-val">${r.precio_uf||'—'} UF</div></div>
+    <div class="info-card"><div class="info-card-label">Región / Comuna</div><div class="info-card-val">${r.region||'—'} · ${r.comuna||'—'}</div></div>
+  `;
+
+  if(datos && Object.keys(datos).length > 0) {
+    // Separador judicial
+    gridHTML += `<div style="grid-column:span 2;margin:4px 0 2px;"><div style="font-size:10px;font-weight:700;color:var(--blue2);letter-spacing:.08em;text-transform:uppercase;border-top:1px solid var(--border);padding-top:12px;">Datos judiciales</div></div>`;
+
+    const camposImportantes = ['origen','tribunal / juez','tribunal','rol','tipo remate','fecha','lugar'];
+    const camposDetalle = ['garantía','garantia','forma de pago','modalidad','plazo','cuenta depósito','cuenta deposito','requisitos','condiciones','observaciones'];
+
+    campos.forEach(({keys, label, icon}) => {
+      const val = keys.map(k => datos[k]).find(v => v && v.length > 1);
+      if(!val) return;
+      const isWide = val.length > 60 || camposDetalle.includes(keys[0]);
+      gridHTML += `<div class="info-card"${isWide?' style="grid-column:span 2;"':''}>
+        <div class="info-card-label">${icon} ${label}</div>
+        <div class="info-card-val" style="font-size:12px;font-weight:500;line-height:1.5;">${val}</div>
+      </div>`;
+    });
+
+    // Anuncio completo
+    if(datos['anuncio'] && datos['anuncio'].length > 10) {
+      document.getElementById('m-descripcion').textContent = datos['anuncio'];
+      // Garantía real
+      if(datos['garantía']||datos['garantia']) {
+        document.getElementById('m-garantia').textContent = datos['garantía']||datos['garantia'];
+      }
+      // Condiciones reales
+      if(datos['condiciones']||datos['requisitos']) {
+        const condBox = document.querySelector('#fpanel-info .condiciones-box');
+        if(condBox) {
+          condBox.innerHTML = '';
+          if(datos['requisitos']) condBox.innerHTML += `<div style="display:flex;gap:10px;align-items:flex-start;font-size:12px;color:var(--text2);line-height:1.5;"><span style="color:var(--blue2);font-weight:700;flex-shrink:0;">→</span>${datos['requisitos']}</div>`;
+          if(datos['condiciones']) condBox.innerHTML += `<div style="display:flex;gap:10px;align-items:flex-start;font-size:12px;color:var(--text2);line-height:1.5;margin-top:8px;"><span style="color:var(--blue2);font-weight:700;flex-shrink:0;">→</span>${datos['condiciones']}</div>`;
+        }
+      }
+    }
+  }
+
+  document.getElementById('m-grid-full').innerHTML = gridHTML;
+}
+
 function openFicha(id){
   const r=DATA.find(x=>x.id===id);
   if(!r)return;
@@ -1207,39 +1345,62 @@ function openFicha(id){
 
   document.getElementById('m-pub-badge').textContent=`Publicado: ${r.fecha_publicacion||r.actualizado||'—'}`;
 
-  // Grid datos completo — usa campos nuevos del scraper si existen
+  // Mapa embebido
+  const mapaWrap = document.getElementById('m-mapa-wrap');
+  const mapaIframe = document.getElementById('m-mapa-iframe');
+  if(r.url_maps){
+    // Convertir URL de Google Maps Search a embed
+    const query = r.url_maps.replace('https://www.google.cl/maps/search/','').replace('https://www.google.com/maps/search/','');
+    mapaIframe.src = `https://maps.google.com/maps?q=${query}&output=embed&z=16`;
+    mapaWrap.style.display = 'block';
+  } else if(r.direccion || r.comuna){
+    const q = encodeURIComponent(`${r.direccion||''} ${r.comuna||''} ${r.region||''} Chile`.trim());
+    mapaIframe.src = `https://maps.google.com/maps?q=${q}&output=embed&z=15`;
+    mapaWrap.style.display = 'block';
+  } else {
+    mapaIframe.src = '';
+    mapaWrap.style.display = 'none';
+  }
+
+  // Link a ficha original
+  const fichaWrap = document.getElementById('m-link-ficha-wrap');
+  const fichaLink = document.getElementById('m-link-ficha');
+  if(r.url_ficha){
+    fichaLink.href = r.url_ficha;
+    fichaWrap.style.display = 'block';
+  } else {
+    fichaWrap.style.display = 'none';
+  }
+
+  // Grid inicial con datos del CSV (se sobreescribe cuando llega la ficha real)
   const horaStr = r.hora ? ` · ${r.hora} hrs` : '';
-  const trBadge = r.tipo_remate ? `<span style="margin-left:6px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:${r.tipo_remate.toLowerCase().includes('virtual')?'var(--purple-bg)':'var(--sky)'};color:${r.tipo_remate.toLowerCase().includes('virtual')?'var(--purple)':'var(--blue2)'};">${r.tipo_remate}</span>` : '';
   document.getElementById('m-grid-full').innerHTML=`
-    <div class="info-card"><div class="info-card-label">Fecha del remate</div><div class="info-card-val">${r.fecha_remate||'—'}${horaStr}${trBadge}</div></div>
-    <div class="info-card"><div class="info-card-label">Fecha publicación</div><div class="info-card-val" style="font-size:13px;color:var(--text2);">${r.fecha_publicacion||r.actualizado||'—'}</div></div>
+    <div class="info-card"><div class="info-card-label">Fecha del remate</div><div class="info-card-val">${r.fecha_remate||'—'}${horaStr}</div></div>
     <div class="info-card"><div class="info-card-label">Postura mínima</div><div class="info-card-val blue">${r.precio_clp||'—'}</div></div>
     <div class="info-card"><div class="info-card-label">Equivalente UF</div><div class="info-card-val">${r.precio_uf||'—'} UF</div></div>
     <div class="info-card"><div class="info-card-label">Región / Comuna</div><div class="info-card-val">${r.region||'—'} · ${r.comuna||'—'}</div></div>
-    ${r.tribunal?`<div class="info-card" style="grid-column:span 2;"><div class="info-card-label">Tribunal / Juez</div><div class="info-card-val" style="font-size:13px;font-weight:500;">${r.tribunal}</div></div>`:''}
-    ${r.rol?`<div class="info-card"><div class="info-card-label">Rol de causa</div><div class="info-card-val">${r.rol}</div></div>`:''}
-    ${r.origen?`<div class="info-card"><div class="info-card-label">Origen</div><div class="info-card-val">${r.origen}</div></div>`:''}
-    ${r.lugar?`<div class="info-card"><div class="info-card-label">Lugar</div><div class="info-card-val">${r.lugar}</div></div>`:''}
-    ${r.metros2?`<div class="info-card"><div class="info-card-label">Metros²</div><div class="info-card-val">${r.metros2}</div></div>`:''}
-    ${r.zoom_link?`<div class="info-card" style="grid-column:span 2;"><div class="info-card-label">Link Zoom</div><div class="info-card-val"><a href="${r.zoom_link}" target="_blank" style="color:var(--blue2);text-decoration:none;font-size:12px;word-break:break-all;">${r.zoom_link}</a></div></div>`:''}
+    <div class="info-card" style="grid-column:span 2;text-align:center;padding:16px;">
+      <div style="font-size:12px;color:var(--text3);">⏳ Cargando datos judiciales…</div>
+    </div>
   `;
 
-  // Garantía dinámica si viene del scraper
-  if(r.garantia){
+  // Garantía por defecto
+  if(!r.garantia){
+    document.getElementById('m-garantia').textContent = '10% del valor base mínimo, digitalizado y acompañado a la carpeta electrónica de la OJV.';
+  } else {
     document.getElementById('m-garantia').textContent = r.garantia;
   }
 
-  // Condiciones dinámicas si vienen del scraper
-  if(r.requisitos||r.condiciones){
+  // Condiciones por defecto
+  if(!r.requisitos && !r.condiciones) {
     const condBox = document.querySelector('#fpanel-info .condiciones-box');
-    if(condBox){
-      condBox.innerHTML = '';
-      if(r.requisitos) condBox.innerHTML += `<div style="display:flex;gap:10px;align-items:flex-start;font-size:12px;color:var(--text2);line-height:1.5;"><span style="color:var(--blue2);font-weight:700;flex-shrink:0;">→</span>${r.requisitos}</div>`;
-      if(r.condiciones) condBox.innerHTML += `<div style="display:flex;gap:10px;align-items:flex-start;font-size:12px;color:var(--text2);line-height:1.5;margin-top:8px;"><span style="color:var(--blue2);font-weight:700;flex-shrink:0;">→</span>${r.condiciones}</div>`;
-    }
+    if(condBox) condBox.innerHTML = `
+      <div style="display:flex;gap:10px;align-items:flex-start;font-size:12px;color:var(--text2);line-height:1.5;"><span style="color:var(--blue2);font-weight:700;flex-shrink:0;">→</span>Vale vista mínima del 10% del precio base.</div>
+      <div style="display:flex;gap:10px;align-items:flex-start;font-size:12px;color:var(--text2);line-height:1.5;margin-top:8px;"><span style="color:var(--blue2);font-weight:700;flex-shrink:0;">→</span>Cédula de identidad vigente durante el acto.</div>
+    `;
   }
 
-  // Anuncio / descripción — usa el anuncio real si existe
+  // Descripción por defecto
   const desc = r.anuncio || `${r.tipo||'Propiedad'} ubicada en ${r.comuna||''}${r.region?', Región '+r.region:''}. ${r.direccion?'Dirección: '+r.direccion+'.':''} Postura mínima de ${r.precio_clp||'—'} (${r.precio_uf||'—'} UF). Remate programado para el ${r.fecha_remate||'—'}.`;
   document.getElementById('m-descripcion').textContent=desc;
 
@@ -1268,6 +1429,9 @@ function openFicha(id){
   document.getElementById('m-btn-zoom').onclick=function(){window.open('https://wa.me/56912345678?text='+msgZoom,'_blank');};
 
   openModal('modal-ficha');
+
+  // Fetch datos judiciales en background (después de abrir el modal)
+  if(r.url_ficha) cargarDatosJudiciales(r.url_ficha, r);
 }
 
 // ─── WHATSAPP DIRECTO ───
