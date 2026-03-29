@@ -1,44 +1,45 @@
-name: Scraper diario de remates
+name: Scraper Remates
 
 on:
-  # Corre automáticamente todos los días a las 07:00 hora Chile (10:00 UTC)
   schedule:
+    # Corre todos los días a las 7:00 AM hora Chile (10:00 UTC)
     - cron: "0 10 * * *"
-
-  # También se puede disparar manualmente desde la pestaña Actions en GitHub
-  workflow_dispatch:
+  workflow_dispatch: # permite correrlo manualmente desde GitHub
 
 jobs:
-  scrape:
+  scraper:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      # 1. Descargar el código del repo
-      - name: Checkout del repositorio
-        uses: actions/checkout@v4.2.2
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      # 2. Instalar Python
-      - name: Configurar Python 3.11
-        uses: actions/setup-python@v5.4.0
+      - name: Instalar Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 3. Instalar dependencias
       - name: Instalar dependencias
         run: pip install requests beautifulsoup4
 
-      # 4. Correr el scraper (genera remates_limpio.csv con solo remates vigentes)
-      - name: Ejecutar scraper
+      - name: Correr scraper
         run: python scraper.py
 
-      # 5. Subir el CSV actualizado al repo automáticamente
-      - name: Commit y push del CSV actualizado
+      - name: Actualizar index.html con datos frescos
+        run: python generar_html.py
+
+      - name: Subir a Google Sheets
+        env:
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: |
+          pip install gspread google-auth
+          python subir_sheets.py
+
+      - name: Commit y push de archivos actualizados
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add remates_limpio.csv
-          # Solo hace commit si el archivo cambió (evita commits vacíos)
-          git diff --cached --quiet || git commit -m "🏠 Remates actualizados $(date +'%d/%m/%Y %H:%M') UTC"
+          git add remates_limpio.csv index.html
+          git diff --staged --quiet || git commit -m "Auto: actualizar remates $(date '+%Y-%m-%d')"
           git push
