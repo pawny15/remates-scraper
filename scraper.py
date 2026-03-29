@@ -1,75 +1,101 @@
 #!/usr/bin/env python3
 """
-Scraper de Remates Judiciales — mipropiedadchile.cl
-Fuente: rematesinmobiliarios.cl
-
-ESTRATEGIA v3:
-- La paginacion del sitio es JavaScript dinamico (no links HTML).
-- Solucion: lee todas las URLs de comunas desde la pagina principal,
-  luego scrapea cada comuna individualmente (max 25 filas c/u).
-  Asi captura todos los remates sin necesitar paginacion.
+Scraper v4 — mipropiedadchile.cl
+Estrategia: URLs de comunas hardcodeadas (la pagina principal carga comunas via JS).
+Cada URL de comuna devuelve max ~25-55 remates en una sola pagina sin paginacion.
 """
 
-import re
-import csv
-import time
-import hashlib
-import logging
+import re, csv, time, hashlib, logging
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Optional
-
 import requests
 from bs4 import BeautifulSoup
 
 OUTPUT_CSV = "remates_limpio.csv"
 LOG_FILE   = "scraper.log"
-DELAY      = 1.0
+DELAY      = 0.8
 UF         = 39841.72
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept-Language": "es-CL,es;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": "https://www.rematesinmobiliarios.cl/",
 }
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
+    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler()],
 )
 log = logging.getLogger(__name__)
 
+# Todas las comunas con remates — extraidas el 2026-03-29
+# Formato: (slug, count_aproximado)
+COMUNAS = [
+    ("santiago", 55), ("estacion-central", 27), ("maipu", 25),
+    ("puente-alto", 20), ("la-florida", 17), ("nunoa", 17),
+    ("san-miguel", 16), ("las-condes", 15), ("san-bernardo", 15),
+    ("independencia", 14), ("lampa", 11), ("antofagasta", 11),
+    ("quinta-normal", 10), ("colbun", 10), ("providencia", 10),
+    ("conchali", 10), ("coquimbo", 9), ("recoleta", 9),
+    ("quilicura", 9), ("buin", 8), ("temuco", 8),
+    ("colina", 8), ("pudahuel", 8), ("lo-barnechea", 7),
+    ("la-serena", 7), ("puerto-montt", 7), ("talagante", 7),
+    ("cerrillos", 7), ("penalolen", 6), ("paine", 6),
+    ("rancagua", 6), ("san-joaquin", 6), ("san-pedro-de-la-paz", 6),
+    ("huechuraba", 6), ("la-cisterna", 6), ("la-pintana", 5),
+    ("vina-del-mar", 5), ("los-angeles", 5), ("pucon", 4),
+    ("puerto-varas", 4), ("macul", 4), ("valparaiso", 4),
+    ("algarrobo", 4), ("aysen", 4), ("vitacura", 3),
+    ("linares", 3), ("melipilla", 3), ("penaflor", 3),
+    ("los-muermos", 3), ("curico", 3), ("vallenar", 3),
+    ("arica", 3), ("concepcion", 3), ("las-cabras", 3),
+    ("purranque", 3), ("renca", 3), ("la-reina", 3),
+    ("copiapo", 2), ("la-granja", 2), ("el-monte", 2),
+    ("punta-arenas", 2), ("calama", 2), ("pirque", 2),
+    ("el-bosque", 2), ("padre-hurtado", 2), ("ovalle", 2),
+    ("chillan", 2), ("osorno", 2), ("quilpue", 2),
+    ("machali", 2), ("isla-de-maipo", 2), ("alto-hospicio", 2),
+    ("los-andes", 2), ("futrono", 2), ("cerro-navia", 2),
+    ("san-vicente", 1), ("villa-alemana", 1), ("catemu", 1),
+    ("ancud", 1), ("villarrica", 1), ("rinconada", 1),
+    ("cartagena", 1), ("victoria", 1), ("calle-larga", 1),
+    ("vicuna", 1), ("calera-de-tango", 1), ("til-til", 1),
+    ("san-ramon", 1), ("teno", 1), ("arkansas", 1),
+    ("talca", 1), ("cabildo", 1), ("la-higuera", 1),
+    ("quintero", 1), ("maria-pinto", 1), ("labranza", 1),
+    ("galvarino", 1), ("lautaro", 1), ("limache", 1),
+    ("llay-llay", 1), ("fresia", 1), ("lo-prado", 1),
+    ("lonquimay", 1), ("estacion-18-central", 1), ("el-tabo", 1),
+    ("maullin", 1), ("chiguayante", 1), ("mulchen", 1),
+    ("navidad", 1), ("pedro-aguirre-cerda", 1), ("pitrufquen", 1),
+    ("coyhaique", 1), ("concon", 1), ("puerto-natales", 1),
+    ("chillan-viejo", 1), ("putaendo", 1), ("puyehue", 1),
+    ("coronel", 1),
+]
+
+BASE = "https://www.rematesinmobiliarios.cl"
 
 @dataclass
 class Remate:
-    id:           str = ""
-    tipo:         str = ""
-    region:       str = ""
-    comuna:       str = ""
-    direccion:    str = ""
+    id: str = ""
+    tipo: str = ""
+    region: str = ""
+    comuna: str = ""
+    direccion: str = ""
     fecha_remate: str = ""
-    fecha_sort:   str = ""
-    precio_clp:   str = ""
-    precio_uf:    str = ""
-    metros2:      str = ""
-    url_ficha:    str = ""
-    url_maps:     str = ""
-    actualizado:  str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
+    fecha_sort: str = ""
+    precio_clp: str = ""
+    precio_uf: str = ""
+    metros2: str = ""
+    url_ficha: str = ""
+    url_maps: str = ""
+    actualizado: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
 
     @staticmethod
     def headers():
-        return ["id","tipo","region","comuna","direccion",
-                "fecha_remate","precio_clp","precio_uf",
-                "metros2","url_ficha","url_maps","actualizado"]
+        return ["id","tipo","region","comuna","direccion","fecha_remate",
+                "precio_clp","precio_uf","metros2","url_ficha","url_maps","actualizado"]
 
     def to_row(self):
         return [self.id,self.tipo,self.region,self.comuna,self.direccion,
@@ -89,10 +115,8 @@ def get_soup(url, session):
 
 
 def parsear_fecha(texto):
-    if not texto:
-        return "", ""
-    texto = texto.strip()
-    m = re.search(r"(\d{1,2})[\-/](\d{1,2})[\-/](\d{4})", texto)
+    if not texto: return "", ""
+    m = re.search(r"(\d{1,2})[\-/](\d{1,2})[\-/](\d{4})", texto.strip())
     if m:
         d, mo, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
         return f"{d}/{mo}/{y}", f"{y}-{mo}-{d}"
@@ -100,16 +124,11 @@ def parsear_fecha(texto):
 
 
 def precio_a_clp_uf(texto):
-    if not texto:
-        return "", ""
-    num_str = texto.replace("$","").replace(".","").replace(",","").strip()
+    if not texto: return "", ""
     try:
-        num    = int(num_str)
-        uf     = round(num / UF, 1)
-        clp    = "$" + f"{num:,}".replace(",",".")
-        uf_fmt = f"{uf:,.1f}".replace(",",".")
-        return clp, uf_fmt
-    except Exception:
+        num = int(texto.replace("$","").replace(".","").replace(",","").strip())
+        return "$"+f"{num:,}".replace(",","."), f"{round(num/UF,1):,.1f}".replace(",",".")
+    except:
         return texto, ""
 
 
@@ -118,56 +137,45 @@ def normalizar_tipo(raw):
         "departamento":"Departamento","depto":"Departamento",
         "casa":"Casa","vivienda":"Casa",
         "sitio":"Sitio/Terreno","terreno":"Sitio/Terreno","lote":"Sitio/Terreno",
-        "parcela":"Parcela","predio":"Parcela",
-        "predio agricola":"Parcela","predio agricola":"Parcela",
+        "parcela":"Parcela","predio":"Parcela","predio agricola":"Parcela",
         "parcela con casa":"Parcela con Casa",
         "local":"Local Comercial","local comercial":"Local Comercial",
-        "oficina":"Oficina","bodega":"Bodega",
-        "galpon":"Galpon","industrial":"Industrial",
-        "nave":"Industrial","edificio":"Edificio",
+        "oficina":"Oficina","bodega":"Bodega","galpon":"Galpon",
+        "industrial":"Industrial","nave":"Industrial","edificio":"Edificio",
         "estacionamiento":"Estacionamiento",
-        "derechos":"Derechos de Propiedad",
-        "derechos de propiedad":"Derechos de Propiedad",
+        "derechos":"Derechos de Propiedad","derechos de propiedad":"Derechos de Propiedad",
         "propiedad":"Inmueble","inmueble":"Inmueble",
     }
     return mapa.get(raw.lower().strip(), raw.title())
 
 
 def generar_id(url_ficha, fecha, comuna):
-    raw = f"{url_ficha}|{fecha}|{comuna}"
-    return hashlib.md5(raw.encode()).hexdigest()[:10].upper()
+    return hashlib.md5(f"{url_ficha}|{fecha}|{comuna}".encode()).hexdigest()[:10].upper()
 
 
-def extraer_filas(soup, fallback_region, BASE):
+def extraer_filas(soup, fallback_region):
     tabla = soup.select_one("table")
-    if not tabla:
-        return []
+    if not tabla: return []
     remates = []
-    filas = tabla.select("tbody tr") or tabla.select("tr")
-    for fila in filas:
+    for fila in (tabla.select("tbody tr") or tabla.select("tr")):
         celdas = fila.select("td")
-        if len(celdas) < 10:
-            continue
+        if len(celdas) < 10: continue
         try:
             fecha_display, fecha_sort = parsear_fecha(celdas[2].get_text(strip=True))
-            region  = celdas[4].get_text(strip=True) if len(celdas) > 4 else fallback_region
+            region  = celdas[4].get_text(strip=True) or fallback_region
             comuna  = celdas[5].get_text(strip=True) if len(celdas) > 5 else ""
             tipo    = normalizar_tipo(celdas[6].get_text(strip=True) if len(celdas) > 6 else "")
-            url_maps  = ""
-            direccion = ""
+            url_maps = direccion = ""
             if len(celdas) > 7:
-                maps_a = celdas[7].select_one("a[href]")
-                if maps_a:
-                    url_maps = maps_a.get("href","")
+                a = celdas[7].select_one("a[href]")
+                if a:
+                    url_maps = a.get("href","")
                     m = re.search(r"/maps/search/(.+)", url_maps)
                     if m:
                         dr = m.group(1)
-                        for enc,char in [
-                            ("%C3%B1","n"),("%C3%A9","e"),("%C3%B3","o"),
-                            ("%C3%A1","a"),("%C3%AD","i"),("%C3%BA","u"),
-                            ("%27","'"),("+"," "),
-                        ]:
-                            dr = dr.replace(enc, char)
+                        for enc,ch in [("%C3%B1","n"),("%C3%A9","e"),("%C3%B3","o"),
+                                       ("%C3%A1","a"),("%C3%AD","i"),("%C3%BA","u"),("%27","'"),("+"," ")]:
+                            dr = dr.replace(enc, ch)
                         dr = re.sub(rf"\s*{re.escape(comuna.lower())}.*$","",dr,flags=re.IGNORECASE)
                         dr = re.sub(r"\s*chile\s*$","",dr,flags=re.IGNORECASE)
                         direccion = re.sub(r"\s{2,}"," ",dr).strip().title()
@@ -191,49 +199,18 @@ def extraer_filas(soup, fallback_region, BASE):
     return remates
 
 
-def obtener_urls_comunas(session, BASE):
-    log.info("  Leyendo lista de comunas desde pagina principal...")
-    soup = get_soup(BASE + "/", session)
-    if not soup:
-        return []
-    comunas = []
-    seen = set()
-    for a in soup.select("a[href]"):
-        href = a.get("href","")
-        texto = a.get_text(strip=True)
-        m = re.match(r"https?://www\.rematesinmobiliarios\.cl/remates/([^/]+)/$", href)
-        if not m:
-            continue
-        slug = m.group(1)
-        if slug.startswith("region-"):
-            continue  # saltar regiones, solo comunas
-        if href in seen:
-            continue
-        seen.add(href)
-        count_m = re.search(r"\((\d+)\)", texto)
-        count = int(count_m.group(1)) if count_m else 0
-        nombre = re.sub(r"\s*\(\d+\)\s*$","",texto).strip()
-        if nombre:
-            comunas.append((href, nombre, count))
-    log.info(f"  {len(comunas)} comunas encontradas")
-    return comunas
-
-
 def scrape():
-    BASE    = "https://www.rematesinmobiliarios.cl"
-    session = requests.Session()
+    session    = requests.Session()
     ids_vistos = set()
     remates    = []
+    total      = len(COMUNAS)
 
-    comunas = obtener_urls_comunas(session, BASE)
-
-    total = len(comunas)
-    for i, (url, nombre, count) in enumerate(comunas, 1):
-        log.info(f"  [{i}/{total}] {nombre} ({count}) — {url}")
+    for i, (slug, count) in enumerate(COMUNAS, 1):
+        url = f"{BASE}/remates/{slug}/"
+        log.info(f"  [{i}/{total}] {slug} (~{count}) — {url}")
         soup = get_soup(url, session)
-        if not soup:
-            continue
-        nuevos = extraer_filas(soup, nombre, BASE)
+        if not soup: continue
+        nuevos = extraer_filas(soup, slug)
         agregados = 0
         for r in nuevos:
             if r.id not in ids_vistos:
@@ -246,9 +223,8 @@ def scrape():
 
 
 def main():
-    log.info("")
-    log.info("="*60)
-    log.info("  SCRAPER v3 — mipropiedadchile.cl")
+    log.info("\n" + "="*60)
+    log.info("  SCRAPER v4 — mipropiedadchile.cl")
     log.info(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info("="*60)
 
@@ -258,16 +234,10 @@ def main():
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(Remate.headers())
-        for r in remates:
-            w.writerow(r.to_row())
+        for r in remates: w.writerow(r.to_row())
 
-    log.info("")
-    log.info("="*60)
-    log.info(f"  COMPLETADO — {len(remates)} remates")
-    log.info(f"  Archivo: {OUTPUT_CSV}")
-    log.info("="*60)
+    log.info(f"\n{'='*60}\n  COMPLETADO — {len(remates)} remates\n  Archivo: {OUTPUT_CSV}\n{'='*60}")
     print(f"\n  Listo. {len(remates)} remates guardados en '{OUTPUT_CSV}'\n")
-
 
 if __name__ == "__main__":
     main()
