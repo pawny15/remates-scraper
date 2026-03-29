@@ -232,6 +232,11 @@ def scrape() -> list:
                     continue
                 # ────────────────────────────────────────────────────────
 
+                # Fecha publicación (col 3) — viene como DD-MM-YYYY en la fuente
+                pub_raw = celdas[3].get_text(strip=True) if len(celdas) > 3 else ""
+                # Normalizar a DD/MM/YYYY igual que fecha_remate
+                pub_display = pub_raw.replace("-", "/") if pub_raw else ""
+
                 # Región (col 4)
                 region = celdas[4].get_text(strip=True) if len(celdas) > 4 else nombre_region
 
@@ -301,7 +306,7 @@ def scrape() -> list:
                     metros2     = metros2,
                     url_ficha   = url_ficha,
                     url_maps    = url_maps,
-                    # fecha_publicacion se asigna automáticamente (hoy)
+                    fecha_publicacion = pub_display,  # ← dato real de la fuente
                 )
                 remates.append(r)
                 nuevos += 1
