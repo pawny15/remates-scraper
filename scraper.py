@@ -3,11 +3,9 @@
 Scraper de Remates Judiciales — mipropiedadchile.cl
 Fuente: rematesinmobiliarios.cl
 Ejecutar: python scraper.py
-Genera: remates_limpio.csv (listo para subir a Google Sheets o la web)
+Genera: remates_limpio.csv
 
-CAMBIOS:
-- Se eliminan automáticamente los remates cuya fecha ya pasó (anteriores a hoy)
-- Se agrega columna 'fecha_publicacion' con la fecha en que el scraper encontró el remate
+Captura TODOS los remates con paginación completa.
 """
 
 import re
@@ -22,10 +20,11 @@ import requests
 from bs4 import BeautifulSoup
 
 # ─── CONFIGURACION ─────────────────────────────────────
-OUTPUT_CSV    = "remates_limpio.csv"
-LOG_FILE      = "scraper.log"
-DELAY         = 1.5
-UF            = 39841.72  # actualizar semanalmente
+OUTPUT_CSV = "remates_limpio.csv"
+LOG_FILE   = "scraper.log"
+DELAY      = 1.2
+UF         = 39841.72
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,14 +54,14 @@ class Remate:
     region:            str = ""
     comuna:            str = ""
     direccion:         str = ""
-    fecha_remate:      str = ""   # DD/MM/YYYY para mostrar
-    fecha_sort:        str = ""   # YYYY-MM-DD para ordenar / filtrar
+    fecha_remate:      str = ""   # DD/MM/YYYY
+    fecha_sort:        str = ""   # YYYY-MM-DD
     precio_clp:        str = ""
     precio_uf:         str = ""
     metros2:           str = ""
     url_ficha:         str = ""
     url_maps:          str = ""
-    fecha_publicacion: str = field(default_factory=lambda: datetime.now().strftime("%d/%m/%Y"))  # ← NUEVO
+    fecha_publicacion: str = ""   # DD/MM/YYYY — dato real de la fuente
     actualizado:       str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
 
     @staticmethod
@@ -71,8 +70,7 @@ class Remate:
             "id", "tipo", "region", "comuna", "direccion",
             "fecha_remate", "precio_clp", "precio_uf",
             "metros2", "url_ficha", "url_maps",
-            "fecha_publicacion",   # ← NUEVO
-            "actualizado"
+            "fecha_publicacion", "actualizado"
         ]
 
     def to_row(self):
@@ -80,14 +78,13 @@ class Remate:
             self.id, self.tipo, self.region, self.comuna, self.direccion,
             self.fecha_remate, self.precio_clp, self.precio_uf,
             self.metros2, self.url_ficha, self.url_maps,
-            self.fecha_publicacion,   # ← NUEVO
-            self.actualizado
+            self.fecha_publicacion, self.actualizado
         ]
 
 # ─── UTILIDADES ────────────────────────────────────────
-def get_soup(url: str, session: requests.Session) -> Optional[BeautifulSoup]:
+def get_soup(url, session):
     try:
-        r = session.get(url, headers=HEADERS, timeout=20)
+        r = session.get(url, headers=HEADERS, timeout=25)
         r.raise_for_status()
         time.sleep(DELAY)
         return BeautifulSoup(r.text, "html.parser")
@@ -95,36 +92,29 @@ def get_soup(url: str, session: requests.Session) -> Optional[BeautifulSoup]:
         log.warning(f"  ERROR {url}: {e}")
         return None
 
-def parsear_fecha(texto: str) -> tuple:
-    """Retorna (fecha_display DD/MM/YYYY, fecha_sort YYYY-MM-DD)"""
+def parsear_fecha(texto):
+    """Acepta DD-MM-YYYY o DD/MM/YYYY. Retorna (DD/MM/YYYY, YYYY-MM-DD)."""
     if not texto:
         return "", ""
-    texto = texto.strip()
-    m = re.search(r"(\d{1,2})[\-/](\d{1,2})[\-/](\d{4})", texto)
+    texto = texto.strip().replace("-", "/")
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", texto)
     if m:
         d, mo, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
         return f"{d}/{mo}/{y}", f"{y}-{mo}-{d}"
     return texto, texto
 
-def es_remate_vigente(fecha_sort: str) -> bool:
-    """
-    Retorna True si el remate es HOY o en el futuro.
-    Retorna False si ya pasó (fecha anterior a hoy).
-    Si la fecha está vacía o es inválida, se conserva el remate (True).
-    """
+def es_vigente(fecha_sort):
     if not fecha_sort:
         return True
     try:
-        fecha_remate = date.fromisoformat(fecha_sort)   # YYYY-MM-DD
-        return fecha_remate >= date.today()
+        return date.fromisoformat(fecha_sort) >= date.today()
     except ValueError:
-        return True   # si no se puede parsear, conservar
+        return True
 
-def precio_a_clp_uf(texto: str) -> tuple:
-    """Convierte '$49.372.295' a ('$49.372.295', '1.239,0')"""
+def precio_a_clp_uf(texto):
     if not texto:
         return "", ""
-    num_str = texto.replace("$", "").replace(".", "").replace(",", "").strip()
+    num_str = re.sub(r"[^\d]", "", texto)
     try:
         num    = int(num_str)
         uf     = round(num / UF, 1)
@@ -134,208 +124,223 @@ def precio_a_clp_uf(texto: str) -> tuple:
     except Exception:
         return texto, ""
 
-def limpiar_direccion(texto: str) -> str:
-    if not texto:
-        return ""
-    texto = re.sub(r"%27", "'", texto)
-    texto = re.sub(r"%[0-9A-Fa-f]{2}", " ", texto)
-    texto = re.sub(r"\s+(Region|Región)\s+Metropolitana.*$", "", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\s+Chile\s*$", "", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\s{2,}", " ", texto)
-    return texto.strip()
-
-def normalizar_tipo(raw: str) -> str:
+def normalizar_tipo(raw):
     mapa = {
-        "departamento":          "Departamento",
-        "depto":                 "Departamento",
-        "casa":                  "Casa",
-        "sitio":                 "Sitio/Terreno",
-        "terreno":               "Sitio/Terreno",
-        "lote":                  "Sitio/Terreno",
-        "parcela":               "Parcela",
-        "predio":                "Parcela",
-        "predio agrícola":       "Parcela",
-        "predio agricola":       "Parcela",
-        "parcela con casa":      "Parcela con Casa",
-        "local":                 "Local Comercial",
-        "local comercial":       "Local Comercial",
-        "oficina":               "Oficina",
-        "bodega":                "Bodega",
-        "estacionamiento":       "Estacionamiento",
-        "industrial":            "Industrial",
-        "propiedad":             "Inmueble",
-        "inmueble":              "Inmueble",
+        "departamento": "Departamento", "depto": "Departamento",
+        "casa": "Casa", "vivienda": "Casa",
+        "sitio": "Sitio/Terreno", "terreno": "Sitio/Terreno", "lote": "Sitio/Terreno",
+        "parcela": "Parcela", "predio": "Parcela",
+        "predio agrícola": "Parcela", "predio agricola": "Parcela",
+        "parcela con casa": "Parcela con Casa",
+        "local": "Local Comercial", "local comercial": "Local Comercial",
+        "oficina": "Oficina", "bodega": "Bodega",
+        "estacionamiento": "Estacionamiento",
+        "industrial": "Industrial", "nave": "Industrial",
+        "galpon": "Industrial", "galpón": "Industrial",
+        "edificio": "Edificio",
+        "propiedad": "Inmueble", "inmueble": "Inmueble",
         "derechos de propiedad": "Derechos de Propiedad",
+        "derechos": "Derechos de Propiedad",
+        "lancha": "Embarcación",
     }
     return mapa.get(raw.lower().strip(), raw.title())
 
-def generar_id(url_ficha: str, fecha: str, comuna: str) -> str:
-    raw = f"{url_ficha}|{fecha}|{comuna}"
+def extraer_direccion(url_maps, comuna):
+    if not url_maps:
+        return ""
+    m = re.search(r"/maps/search/(.+?)(?:\?|$)", url_maps)
+    if not m:
+        return ""
+    dir_raw = m.group(1)
+    reemplazos = [
+        ("%C3%B1","ñ"),("%C3%A9","é"),("%C3%B3","ó"),("%C3%A1","á"),
+        ("%C3%AD","í"),("%C3%BA","ú"),("%C3%91","Ñ"),("%C3%89","É"),
+        ("%C3%81","Á"),("%C3%9A","Ú"),("%27","'"),("%C2%A0"," "),
+        ("%C2%B0","°"),("+"," "),("%2C",","),("%2F","/"),
+    ]
+    for enc, char in reemplazos:
+        dir_raw = dir_raw.replace(enc, char)
+    patrones_fin = [
+        rf"\s*,?\s*{re.escape(comuna.lower())}.*$",
+        r"\s*,?\s*región\s+metropolitana.*$",
+        r"\s*,?\s*región\s+de.*$",
+        r"\s*,?\s*chile\s*$",
+        r"\s*,?\s*santiago\s*$",
+    ]
+    for pat in patrones_fin:
+        dir_raw = re.sub(pat, "", dir_raw, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", dir_raw).strip().title()
+
+def generar_id(url_ficha, fecha_sort, comuna):
+    raw = f"{url_ficha}|{fecha_sort}|{comuna}"
     return hashlib.md5(raw.encode()).hexdigest()[:10].upper()
 
+def detectar_total_paginas(soup):
+    """
+    Lee el paginador del HTML y devuelve el número máximo de página.
+    El sitio usa ?pagina=N como parámetro.
+    """
+    numeros = re.findall(r"pagina=(\d+)", soup.decode())
+    if not numeros:
+        return 1
+    return max(int(n) for n in numeros)
+
 # ══════════════════════════════════════════════════════
-# SCRAPER — rematesinmobiliarios.cl
+# CORE: scrapear una URL (una sola página de la tabla)
 # ══════════════════════════════════════════════════════
-def scrape() -> list:
-    BASE = "https://www.rematesinmobiliarios.cl"
-    REGIONES = [
-        ("",                        ""),
-        ("region-arica-y-parinacota", "Arica y Parinacota"),
-        ("region-tarapaca",           "Tarapacá"),
-        ("region-antofagasta",        "Antofagasta"),
-        ("region-atacama",            "Atacama"),
-        ("region-coquimbo",           "Coquimbo"),
-        ("region-valparaiso",         "Valparaíso"),
-        ("region-metropolitana",      "Metropolitana"),
-        ("region-ohiggins",           "O'Higgins"),
-        ("region-maule",              "Maule"),
-        ("region-nuble",              "Ñuble"),
-        ("region-biobio",             "Biobío"),
-        ("region-araucania",          "Araucanía"),
-        ("region-los-rios",           "Los Ríos"),
-        ("region-los-lagos",          "Los Lagos"),
-        ("region-aysen",              "Aysén"),
-        ("region-magallanes",         "Magallanes"),
-    ]
+def scrape_pagina(url, session, fallback_region, ids_vistos):
+    soup = get_soup(url, session)
+    if not soup:
+        return [], 1
 
-    session    = requests.Session()
-    remates    = []
-    ids_vistos = set()
+    tabla = soup.select_one("table")
+    if not tabla:
+        return [], 1
 
-    for slug, nombre_region in REGIONES:
-        url = f"{BASE}/remates/{slug}/" if slug else f"{BASE}/"
-        log.info(f"  -> {url}")
-        soup = get_soup(url, session)
-        if not soup:
+    total_pags = detectar_total_paginas(soup)
+    filas      = tabla.select("tbody tr") or tabla.select("tr")
+    result     = []
+
+    for fila in filas:
+        celdas = fila.select("td")
+        if len(celdas) < 5:
             continue
-
-        tabla = soup.select_one("table")
-        if not tabla:
-            log.info(f"     Sin tabla")
-            continue
-
-        filas  = tabla.select("tbody tr") or tabla.select("tr")
-        nuevos = 0
-
-        for fila in filas:
-            celdas = fila.select("td")
-            if len(celdas) < 5:
+        try:
+            # Col 2: Fecha Remate
+            fecha_display, fecha_sort = parsear_fecha(celdas[2].get_text(strip=True))
+            if not es_vigente(fecha_sort):
                 continue
 
-            try:
-                # Fecha remate (col 2)
-                fecha_display, fecha_sort = parsear_fecha(celdas[2].get_text(strip=True))
+            # Col 3: Publicado
+            pub_display, _ = parsear_fecha(celdas[3].get_text(strip=True) if len(celdas) > 3 else "")
 
-                # ── FILTRO DE VIGENCIA ──────────────────────────────────
-                if not es_remate_vigente(fecha_sort):
-                    log.debug(f"     Remate vencido ({fecha_display}), descartado.")
-                    continue
-                # ────────────────────────────────────────────────────────
+            # Col 4: Región
+            region = celdas[4].get_text(strip=True) if len(celdas) > 4 else fallback_region
 
-                # Fecha publicación (col 3) — viene como DD-MM-YYYY en la fuente
-                pub_raw = celdas[3].get_text(strip=True) if len(celdas) > 3 else ""
-                # Normalizar a DD/MM/YYYY igual que fecha_remate
-                pub_display = pub_raw.replace("-", "/") if pub_raw else ""
+            # Col 5: Comuna
+            comuna = celdas[5].get_text(strip=True) if len(celdas) > 5 else ""
 
-                # Región (col 4)
-                region = celdas[4].get_text(strip=True) if len(celdas) > 4 else nombre_region
+            # Col 6: Tipo
+            tipo = normalizar_tipo(celdas[6].get_text(strip=True) if len(celdas) > 6 else "")
 
-                # Comuna (col 5)
-                comuna = celdas[5].get_text(strip=True) if len(celdas) > 5 else ""
+            # Col 7: Maps / Dirección
+            url_maps  = ""
+            direccion = ""
+            if len(celdas) > 7:
+                a = celdas[7].select_one("a[href]")
+                if a:
+                    url_maps  = a.get("href", "")
+                    direccion = extraer_direccion(url_maps, comuna)
 
-                # Tipo (col 6)
-                tipo_raw = celdas[6].get_text(strip=True) if len(celdas) > 6 else ""
-                tipo     = normalizar_tipo(tipo_raw)
+            # Col 8: M2
+            metros2 = celdas[8].get_text(strip=True) if len(celdas) > 8 else ""
 
-                # Maps y dirección (col 7)
-                url_maps  = ""
-                direccion = ""
-                if len(celdas) > 7:
-                    maps_a = celdas[7].select_one("a[href]")
-                    if maps_a:
-                        url_maps = maps_a.get("href", "")
-                        m = re.search(r"/maps/search/(.+)", url_maps)
-                        if m:
-                            dir_raw = m.group(1)
-                            for enc, char in [
-                                ("%C3%B1","ñ"),("%C3%A9","é"),("%C3%B3","ó"),
-                                ("%C3%A1","á"),("%C3%AD","í"),("%C3%BA","ú"),
-                                ("%C3%91","Ñ"),("%C3%89","É"),("%27","'"),
-                                ("+"," "),
-                            ]:
-                                dir_raw = dir_raw.replace(enc, char)
-                            dir_raw = re.sub(
-                                rf"\s*{re.escape(comuna.lower())}.*$", "",
-                                dir_raw, flags=re.IGNORECASE
-                            )
-                            dir_raw   = re.sub(r"\s*chile\s*$", "", dir_raw, flags=re.IGNORECASE)
-                            dir_raw   = re.sub(r"\s{2,}", " ", dir_raw)
-                            direccion = dir_raw.strip().title()
+            # Col 9: Precio
+            precio_clp, precio_uf = precio_a_clp_uf(
+                celdas[9].get_text(strip=True) if len(celdas) > 9 else ""
+            )
 
-                # M2 (col 8)
-                metros2 = celdas[8].get_text(strip=True) if len(celdas) > 8 else ""
+            # Col 10: URL ficha
+            url_ficha = ""
+            if len(celdas) > 10:
+                a = celdas[10].select_one("a[href]")
+                if a:
+                    href = a.get("href", "")
+                    url_ficha = href if href.startswith("http") else \
+                                "https://www.rematesinmobiliarios.cl" + href
 
-                # Precio (col 9)
-                precio_raw        = celdas[9].get_text(strip=True) if len(celdas) > 9 else ""
-                precio_clp, precio_uf = precio_a_clp_uf(precio_raw)
+            rid = generar_id(url_ficha, fecha_sort, comuna)
+            if rid in ids_vistos:
+                continue
+            ids_vistos.add(rid)
 
-                # URL ficha (col 10)
-                url_ficha = ""
-                if len(celdas) > 10:
-                    a = celdas[10].select_one("a[href]")
-                    if a:
-                        href      = a.get("href", "")
-                        url_ficha = href if href.startswith("http") else BASE + href
+            result.append(Remate(
+                id=rid, tipo=tipo, region=region, comuna=comuna,
+                direccion=direccion, fecha_remate=fecha_display,
+                fecha_sort=fecha_sort, precio_clp=precio_clp,
+                precio_uf=precio_uf, metros2=metros2,
+                url_ficha=url_ficha, url_maps=url_maps,
+                fecha_publicacion=pub_display,
+            ))
+        except Exception as e:
+            log.warning(f"    Fila error: {e}")
 
-                # ID único y deduplicar
-                rid = generar_id(url_ficha, fecha_sort, comuna)
-                if rid in ids_vistos:
-                    continue
-                ids_vistos.add(rid)
+    return result, total_pags
 
-                r = Remate(
-                    id          = rid,
-                    tipo        = tipo,
-                    region      = region,
-                    comuna      = comuna,
-                    direccion   = direccion,
-                    fecha_remate= fecha_display,
-                    fecha_sort  = fecha_sort,
-                    precio_clp  = precio_clp,
-                    precio_uf   = precio_uf,
-                    metros2     = metros2,
-                    url_ficha   = url_ficha,
-                    url_maps    = url_maps,
-                    fecha_publicacion = pub_display,  # ← dato real de la fuente
-                )
-                remates.append(r)
-                nuevos += 1
 
-            except Exception as e:
-                log.warning(f"     Error en fila: {e}")
+def scrape_region(slug, nombre, session, ids_vistos):
+    BASE = "https://www.rematesinmobiliarios.cl"
+    base_url = f"{BASE}/remates/{slug}/"
+    log.info(f"  [{nombre}] {base_url}")
 
-        log.info(f"     {nuevos} nuevos en {nombre_region or 'todas las regiones'}")
+    remates_region = []
 
-    return remates
+    # Página 1 — también detecta total de páginas
+    lote, total_pags = scrape_pagina(base_url, session, nombre, ids_vistos)
+    remates_region.extend(lote)
+    log.info(f"    Pág 1/{total_pags}: {len(lote)} remates")
+
+    # Páginas 2..N
+    for pag in range(2, total_pags + 1):
+        url_pag = f"{base_url}?pagina={pag}"
+        lote, _ = scrape_pagina(url_pag, session, nombre, ids_vistos)
+        log.info(f"    Pág {pag}/{total_pags}: {len(lote)} remates")
+        remates_region.extend(lote)
+        if not lote:
+            log.info(f"    Pág {pag} vacía — parando")
+            break
+
+    log.info(f"  [{nombre}] subtotal: {len(remates_region)}")
+    return remates_region
+
 
 # ══════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════
+def scrape():
+    REGIONES = [
+        ("region-arica-y-parinacota", "Arica y Parinacota"),
+        ("region-internacional",       "Internacional"),
+        ("region-tarapaca",            "Tarapacá"),
+        ("region-antofagasta",         "Antofagasta"),
+        ("region-atacama",             "Atacama"),
+        ("region-coquimbo",            "Coquimbo"),
+        ("region-valparaiso",          "Valparaíso"),
+        ("region-metropolitana",       "Metropolitana"),
+        ("region-ohiggins",            "O'Higgins"),
+        ("region-maule",               "Maule"),
+        ("region-nuble",               "Ñuble"),
+        ("region-biobio",              "Biobío"),
+        ("region-araucania",           "Araucanía"),
+        ("region-los-rios",            "Los Ríos"),
+        ("region-los-lagos",           "Los Lagos"),
+        ("region-aysen",               "Aysén"),
+        ("region-magallanes",          "Magallanes"),
+    ]
+
+    session    = requests.Session()
+    ids_vistos = set()
+    todos      = []
+
+    for slug, nombre in REGIONES:
+        todos.extend(scrape_region(slug, nombre, session, ids_vistos))
+        log.info(f"  Acumulado total: {len(todos)}")
+
+    return todos
+
+
 def main():
     hoy = date.today().strftime("%Y-%m-%d")
     log.info("")
     log.info("=" * 60)
     log.info("  SCRAPER — mipropiedadchile.cl")
     log.info(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log.info(f"  Solo se guardan remates con fecha >= {hoy}")
+    log.info(f"  Remates vigentes a partir de: {hoy}")
     log.info("=" * 60)
 
     remates = scrape()
-
-    # Ordenar por fecha más próxima
     remates.sort(key=lambda r: r.fecha_sort or "9999")
 
-    # Guardar CSV limpio
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(Remate.headers())
@@ -344,16 +349,11 @@ def main():
 
     log.info("")
     log.info("=" * 60)
-    log.info(f"  COMPLETADO")
-    log.info(f"  {len(remates)} remates vigentes (>= hoy) guardados")
+    log.info(f"  COMPLETADO: {len(remates)} remates vigentes")
     log.info(f"  Archivo: {OUTPUT_CSV}")
     log.info("=" * 60)
-    log.info("")
+    print(f"\n  Listo. {len(remates)} remates guardados en '{OUTPUT_CSV}'\n")
 
-    print("")
-    print(f"  Listo. {len(remates)} remates vigentes en '{OUTPUT_CSV}'")
-    print(f"  Ejecuta 'start {OUTPUT_CSV}' para abrirlo en Excel.")
-    print("")
 
 if __name__ == "__main__":
     main()
