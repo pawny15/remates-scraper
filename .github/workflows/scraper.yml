@@ -1,20 +1,20 @@
-name: Scraper Remates
+name: Scrape Remates
 
 on:
   schedule:
-    # Corre todos los días a las 7:00 AM hora Chile (10:00 UTC)
-    - cron: "0 10 * * *"
-  workflow_dispatch: # permite correrlo manualmente desde GitHub
+    # Lunes, miércoles y viernes a las 07:00 hora Chile (UTC-3 = 10:00 UTC)
+    - cron: "0 10 * * 1,3,5"
+  workflow_dispatch: # permite ejecutar manualmente desde GitHub
 
 jobs:
-  scraper:
+  scrape:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Instalar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -22,24 +22,18 @@ jobs:
       - name: Instalar dependencias
         run: pip install requests beautifulsoup4
 
-      - name: Correr scraper
-        run: python scraper.py
+      - name: Ejecutar scraper
+        run: python scraper_v5.py
 
-      - name: Actualizar index.html con datos frescos
-        run: python generar_html.py
-
-      - name: Subir a Google Sheets
-        env:
-          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
+      - name: Verificar resultado
         run: |
-          pip install gspread google-auth
-          python subir_sheets.py
+          echo "Total remates:"
+          python -c "import json; d=json.load(open('remates.json')); print(d['total'])"
 
-      - name: Commit y push de archivos actualizados
+      - name: Commit y push remates.json
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add remates_limpio.csv index.html
-          git diff --staged --quiet || git commit -m "Auto: actualizar remates $(date '+%Y-%m-%d')"
+          git add remates.json
+          git diff --cached --quiet || git commit -m "chore: actualizar remates $(date +'%Y-%m-%d')"
           git push
