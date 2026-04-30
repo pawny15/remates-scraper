@@ -28,7 +28,7 @@ jobs:
         run: pip install requests beautifulsoup4
 
       - name: Ejecutar scraper
-        run: python scraper.py
+        run: python scraper_v5.py
 
       - name: Generar index.html
         run: python build_html.py
