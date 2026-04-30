@@ -1,39 +1,105 @@
-name: Scrape Remates
+name: Scraper Diario — mipropiedadchile.cl
 
 on:
+  # ── CRON: 23:59 hora Chile (Chile Continental = UTC-3 en horario de verano, UTC-4 en invierno)
+  # Para cubrir ambos, usamos 02:59 UTC (= 23:59 UTC-3 / 22:59 UTC-4)
+  # En la práctica corre entre 23:59 y 00:59 hora Chile dependiendo del horario
   schedule:
-    # Lunes, miércoles y viernes a las 07:00 hora Chile (UTC-3 = 10:00 UTC)
-    - cron: "0 10 * * 1,3,5"
-  workflow_dispatch: # permite ejecutar manualmente desde GitHub
+    - cron: '59 2 * * *'   # 23:59 hora Chile (UTC-3 verano)
+
+  # ── También se puede ejecutar manualmente desde GitHub Actions
+  workflow_dispatch:
+
+permissions:
+  contents: write   # necesario para hacer git push del index.html actualizado
 
 jobs:
-  scrape:
+  scrape-and-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repo
+      # 1. Checkout del repositorio
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
+      # 2. Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+          cache: 'pip'
 
+      # 3. Instalar dependencias
       - name: Instalar dependencias
-        run: pip install requests beautifulsoup4
+        run: |
+          pip install requests beautifulsoup4
 
+      # 4. Ejecutar el scraper → genera remates_limpio.csv
       - name: Ejecutar scraper
-        run: python scraper_v5.py
-
-      - name: Verificar resultado
         run: |
-          echo "Total remates:"
-          python -c "import json; d=json.load(open('remates.json')); print(d['total'])"
+          echo "=== Iniciando scraper ==="
+          python scraper.py
+          echo "=== Scraper completado ==="
+          wc -l remates_limpio.csv || echo "CSV no generado"
 
-      - name: Commit y push remates.json
+      # 5. Ejecutar build → genera index.html con datos embebidos
+      - name: Generar index.html
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add remates.json
-          git diff --cached --quiet || git commit -m "chore: actualizar remates $(date +'%Y-%m-%d')"
-          git push
+          echo "=== Generando index.html ==="
+          python build_html.py
+          echo "=== Build completado ==="
+          ls -lh index.html
+
+      # 6. Verificar que el archivo tiene datos reales
+      - name: Verificar output
+        run: |
+          REMATES=$(python3 -c "
+          import json, re
+          with open('index.html', 'r', encoding='utf-8') as f:
+              content = f.read()
+          m = re.search(r'const DATA_EMBEDDED = (\[.*?\]);', content, re.DOTALL)
+          if m:
+              data = json.loads(m.group(1))
+              print(len(data))
+          else:
+              print(0)
+          ")
+          echo "Remates en el HTML: $REMATES"
+          if [ "$REMATES" -lt 10 ]; then
+            echo "ERROR: Muy pocos remates ($REMATES). Posible fallo del scraper."
+            exit 1
+          fi
+          echo "✓ Verificación exitosa: $REMATES remates embebidos"
+
+      # 7. Commit y push del index.html actualizado
+      - name: Commit y push index.html
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Agregar archivos generados
+          git add index.html remates_limpio.csv
+
+          # Solo commitear si hay cambios
+          if git diff --staged --quiet; then
+            echo "Sin cambios en los datos. No se hace commit."
+          else
+            FECHA=$(TZ='America/Santiago' date '+%d/%m/%Y %H:%M')
+            REMATES=$(python3 -c "
+          import json, re
+          with open('index.html', 'r', encoding='utf-8') as f:
+              content = f.read()
+          m = re.search(r'const DATA_EMBEDDED = (\[.*?\]);', content, re.DOTALL)
+          if m:
+              data = json.loads(m.group(1))
+              print(len(data))
+          else:
+              print('?')
+          ")
+            git commit -m "🏠 Actualización automática — $FECHA | $REMATES remates"
+            git push
+            echo "✓ Push exitoso"
+          fi
